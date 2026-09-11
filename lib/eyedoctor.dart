@@ -77,7 +77,7 @@ class _EyeDoctorPageState extends State<EyeDoctorPage> {
       if (mounted) setState(() => _isLoadingConvoy = false);
     }
 
-    // 3. Setup realtime listener for patients in 'eye' queue
+    // 3. Setup realtime listener for patients in 'eyeinside' queue
     _subscribeToEyeQueueStream();
   }
 
@@ -87,7 +87,7 @@ class _EyeDoctorPageState extends State<EyeDoctorPage> {
     _queueSubscription = _supabase
         .from('registrations')
         .stream(primaryKey: ['id'])
-        .eq('queuefor', 'eye')
+        .eq('queuefor', 'eyeinside')
         .order('id', ascending: true)
         .listen(
           (data) {

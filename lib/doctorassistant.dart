@@ -111,6 +111,29 @@ class _DoctorAssistantPageState extends State<DoctorAssistantPage> {
         );
   }
 
+  Future<void> _enterPatient(dynamic patientId) async {
+    final newQueueFor = _targetQueue == 'eye'
+        ? 'eyeinside'
+        : _targetQueue == 'batna'
+            ? 'batnainside'
+            : '${_targetQueue}inside';
+
+    try {
+      await _supabase
+          .from('registrations')
+          .update({'queuefor': newQueueFor})
+          .eq('id', patientId);
+
+      if (mounted) {
+        _showSnackBar('Patient moved to $newQueueFor');
+      }
+    } catch (e) {
+      if (mounted) {
+        _showSnackBar('Error updating queue: $e');
+      }
+    }
+  }
+
   int? _calculateAge(String? dobString) {
     if (dobString == null) return null;
     try {
@@ -345,14 +368,31 @@ class _DoctorAssistantPageState extends State<DoctorAssistantPage> {
                                           style: const TextStyle(fontSize: 13),
                                         ),
                                       ),
-                                      trailing: Text(
-                                        'Pos #${index + 1}',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: isFirstInLine
-                                              ? Colors.indigo.shade800
-                                              : Colors.grey,
-                                        ),
+                                      trailing: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          ElevatedButton(
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor:
+                                                  Colors.indigo.shade700,
+                                              foregroundColor: Colors.white,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 12,
+                                                    vertical: 8,
+                                                  ),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                            ),
+                                            onPressed: () => _enterPatient(
+                                              patient['id'],
+                                            ),
+                                            child: const Text('ENTER'),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   );

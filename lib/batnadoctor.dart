@@ -73,7 +73,7 @@ class _BatnaDoctorPageState extends State<BatnaDoctorPage> {
       if (mounted) setState(() => _isLoadingConvoy = false);
     }
 
-    // 3. Setup realtime listener for patients in 'batna' queue
+    // 3. Setup realtime listener for patients in 'batnainside' queue
     _subscribeToBatnaQueueStream();
   }
 
@@ -83,7 +83,7 @@ class _BatnaDoctorPageState extends State<BatnaDoctorPage> {
     _queueSubscription = _supabase
         .from('registrations')
         .stream(primaryKey: ['id'])
-        .eq('queuefor', 'batna')
+        .eq('queuefor', 'batnainside')
         .order('id', ascending: true)
         .listen(
           (data) {
