@@ -8,6 +8,7 @@ import 'waitingarea.dart';
 import 'batnadoctor.dart';
 import 'doctorassistant.dart';
 import 'bus.dart';
+import 'glasses.dart';
 import 'admin/admin.dart';
 
 class LoginPage extends StatefulWidget {
@@ -119,10 +120,18 @@ class _LoginPageState extends State<LoginPage> {
             builder: (context) => OperationBusPage(userData: response),
           ),
         );
+      } else if (role == 'glassesassistant' ||
+          role == 'glasses' ||
+          role == 'eyeglassesassistant') {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => GlassesPage(userData: response),
+          ),
+        );
       } else if (role == 'eyedoctorassistant' ||
           role == 'autorefdoctorassistant' ||
-          role == 'batnadoctorassistant' ||
-          role == 'glassesassistant') {
+          role == 'batnadoctorassistant') {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(

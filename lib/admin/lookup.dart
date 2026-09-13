@@ -79,6 +79,23 @@ class _PatientLookupWidgetState extends State<PatientLookupWidget> {
     final String takhasos1 = patient['takhasos1']?.toString() ?? 'Specialty 1';
     final String? takhasos2 = patient['takhasos2']?.toString();
 
+    // Helper functions to evaluate queue states for Eye / Batna / other specialties
+    bool isQueueActive(String specialty) {
+      final key = specialty.toLowerCase().trim();
+      return queueFor.contains(key);
+    }
+
+    String getQueueSubtitle(String specialty, bool isDone) {
+      if (isDone) return 'Examination Completed';
+      final key = specialty.toLowerCase().trim();
+      if (queueFor.contains('${key}inside')) {
+        return 'Currently Inside Examination Room';
+      } else if (queueFor.contains(key)) {
+        return 'Waiting in Queue';
+      }
+      return 'Pending';
+    }
+
     showDialog(
       context: context,
       builder: (context) {
@@ -175,6 +192,14 @@ class _PatientLookupWidgetState extends State<PatientLookupWidget> {
                             color: Colors.black87,
                           ),
                         ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Phone: ${patient['phone']?.toString() ?? "N/A"}',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: Colors.black87,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -210,26 +235,18 @@ class _PatientLookupWidgetState extends State<PatientLookupWidget> {
                 // Step 3: Primary Specialty (Takhasos 1)
                 _buildTimelineStep(
                   title: '$takhasos1 Doctor',
-                  subtitle: isTakhasos1Done
-                      ? 'Examination Completed'
-                      : (queueFor.contains(takhasos1.toLowerCase())
-                            ? 'Currently in Queue'
-                            : 'Pending'),
+                  subtitle: getQueueSubtitle(takhasos1, isTakhasos1Done),
                   isDone: isTakhasos1Done,
-                  isActive: queueFor.contains(takhasos1.toLowerCase()),
+                  isActive: isQueueActive(takhasos1),
                 ),
 
                 // Step 4: Secondary Specialty (Takhasos 2) - if assigned
                 if (takhasos2 != null && takhasos2.trim().isNotEmpty)
                   _buildTimelineStep(
                     title: '$takhasos2 Doctor',
-                    subtitle: isTakhasos2Done
-                        ? 'Examination Completed'
-                        : (queueFor.contains(takhasos2.toLowerCase())
-                              ? 'Currently in Queue'
-                              : 'Pending'),
+                    subtitle: getQueueSubtitle(takhasos2, isTakhasos2Done),
                     isDone: isTakhasos2Done,
-                    isActive: queueFor.contains(takhasos2.toLowerCase()),
+                    isActive: isQueueActive(takhasos2),
                   ),
 
                 // Step 5: Eyeglasses / Operation Referrals

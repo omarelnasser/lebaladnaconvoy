@@ -31,12 +31,8 @@ class _WaitingAreaPageState extends State<WaitingAreaPage> {
   int _insideCountTakhasos1 = 0;
   int _insideCountTakhasos2 = 0;
 
-  // Staging list for up to 5 patients
+  // Staging list for unlimited patients
   final List<Map<String, dynamic>> _stagedPatients = [];
-
-  // Dropdown selected values
-  Map<String, dynamic>? _selectedPatientT1;
-  Map<String, dynamic>? _selectedPatientT2;
 
   @override
   void initState() {
@@ -109,7 +105,7 @@ class _WaitingAreaPageState extends State<WaitingAreaPage> {
           final countT1 = data.where((r) {
             final q = r['queuefor']?.toString().toLowerCase() ?? '';
             final t1 = r['takhasos1']?.toString().toLowerCase() ?? '';
-            return (q == 'autoref' || q.contains(t1Lower)) &&
+            return (q.contains('autoref') || q.contains(t1Lower)) &&
                 t1.contains(t1Lower);
           }).length;
 
@@ -117,7 +113,7 @@ class _WaitingAreaPageState extends State<WaitingAreaPage> {
             final q = r['queuefor']?.toString().toLowerCase() ?? '';
             final t2 = r['takhasos2']?.toString().toLowerCase() ?? '';
             return t2Lower.isNotEmpty &&
-                (q == 'autoref' || q.contains(t2Lower)) &&
+                (q.contains('autoref') || q.contains(t2Lower)) &&
                 t2.contains(t2Lower);
           }).length;
 
@@ -130,29 +126,134 @@ class _WaitingAreaPageState extends State<WaitingAreaPage> {
         });
   }
 
-  void _stagePatient(Map<String, dynamic> patient, String targetSpecialty) {
-    if (_stagedPatients.length >= 5) {
-      _showSnackBar('Staging area is full (Maximum 5 patients allowed)');
-      return;
-    }
+  void _openSelectionPopup(
+    String targetSpecialty,
+    List<Map<String, dynamic>> availablePatients,
+  ) {
+    // Filter out patients that are already in staging
+    final unstagedPatients = availablePatients.where((p) {
+      return !_stagedPatients.any((staged) => staged['id'] == p['id']);
+    }).toList();
 
-    final isAlreadyStaged = _stagedPatients.any(
-      (p) => p['id'] == patient['id'],
-    );
-    if (isAlreadyStaged) {
-      _showSnackBar('Patient is already in the staging list');
-      return;
-    }
-
-    setState(() {
-      final stagedEntry = Map<String, dynamic>.from(patient);
-      stagedEntry['target_specialty'] = targetSpecialty;
-      _stagedPatients.add(stagedEntry);
-
-      // Clear selection after staging
-      if (targetSpecialty == _takhasos1) _selectedPatientT1 = null;
-      if (targetSpecialty == _takhasos2) _selectedPatientT2 = null;
+    // Sort patients by ID in ascending order
+    unstagedPatients.sort((a, b) {
+      final idA = a['id'] is int ? a['id'] as int : int.tryParse(a['id'].toString()) ?? 0;
+      final idB = b['id'] is int ? b['id'] as int : int.tryParse(b['id'].toString()) ?? 0;
+      return idA.compareTo(idB);
     });
+
+    if (unstagedPatients.isEmpty) {
+      _showSnackBar('No available unstaged patients for $targetSpecialty');
+      return;
+    }
+
+    final Set<dynamic> locallySelectedIds = {};
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setPopupState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: Text(
+                'Select Patients for $targetSpecialty',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Selected: ${locallySelectedIds.length} patient(s)',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: Colors.teal.shade800,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: unstagedPatients.length,
+                        itemBuilder: (context, index) {
+                          final patient = unstagedPatients[index];
+                          final patientId = patient['id'];
+                          final isChecked = locallySelectedIds.contains(
+                            patientId,
+                          );
+
+                          return CheckboxListTile(
+                            activeColor: Colors.teal.shade800,
+                            title: Text(
+                              '#$patientId - ${patient['fullname'] ?? "Unknown"}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
+                            subtitle: Text(
+                              'National ID: ${patient['id_number'] ?? "N/A"}',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            value: isChecked,
+                            onChanged: (bool? checked) {
+                              setPopupState(() {
+                                if (checked == true) {
+                                  locallySelectedIds.add(patientId);
+                                } else {
+                                  locallySelectedIds.remove(patientId);
+                                }
+                              });
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.teal.shade800,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: locallySelectedIds.isEmpty
+                      ? null
+                      : () {
+                          setState(() {
+                            for (final p in unstagedPatients) {
+                              if (locallySelectedIds.contains(p['id'])) {
+                                final stagedEntry = Map<String, dynamic>.from(
+                                  p,
+                                );
+                                stagedEntry['target_specialty'] =
+                                    targetSpecialty;
+                                _stagedPatients.add(stagedEntry);
+                              }
+                            }
+                          });
+                          Navigator.pop(context);
+                        },
+                  child: Text('Add Selected (${locallySelectedIds.length})'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _removeStagedPatient(int index) {
@@ -171,13 +272,18 @@ class _WaitingAreaPageState extends State<WaitingAreaPage> {
 
     try {
       for (final patient in _stagedPatients) {
-        final bool requiresAutoref = patient['autoref'] == true;
-        final String targetSpecialty = patient['target_specialty'] ?? '';
+        final String targetSpecialty =
+            patient['target_specialty']?.toString().toLowerCase() ?? '';
 
-        // Route to autoref first if required, otherwise route directly to specialty
-        final String nextQueue = requiresAutoref
-            ? 'autoref'
-            : targetSpecialty.toLowerCase();
+        // Determine destination column string based on specialty
+        String nextQueue;
+        if (targetSpecialty.contains('eye')) {
+          nextQueue = 'autorefwaiting';
+        } else if (targetSpecialty.contains('batna')) {
+          nextQueue = 'batnawaiting';
+        } else {
+          nextQueue = '${targetSpecialty}waiting';
+        }
 
         await _supabase
             .from('registrations')
@@ -338,62 +444,70 @@ class _WaitingAreaPageState extends State<WaitingAreaPage> {
                       ),
                       const SizedBox(height: 24),
 
-                      // Dropdown Specialty 1
+                      // Multi-Select Popup Button for Specialty 1
                       Text(
-                        'Select Patient for ${_takhasos1 ?? "Takhasos 1"}',
+                        'Select Patients for ${_takhasos1 ?? "Takhasos 1"}',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                       const SizedBox(height: 8),
-                      DropdownButtonFormField<Map<String, dynamic>>(
-                        value: _selectedPatientT1,
-                        decoration: const InputDecoration(
-                          border: OutlineInputBorder(),
-                          hintText: 'Select patient waiting outside...',
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () => _openSelectionPopup(
+                            _takhasos1 ?? 'Takhasos 1',
+                            _outsidePatientsTakhasos1,
+                          ),
+                          icon: const Icon(Icons.person_add_alt_1),
+                          label: Text(
+                            'Choose Patients for ${_takhasos1 ?? "Takhasos 1"} (${_outsidePatientsTakhasos1.length} Available)',
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            side: BorderSide(color: Colors.teal.shade800),
+                            foregroundColor: Colors.teal.shade800,
+                          ),
                         ),
-                        items: _outsidePatientsTakhasos1.map((p) {
-                          return DropdownMenuItem<Map<String, dynamic>>(
-                            value: p,
-                            child: Text('#${p['id']} - ${p['fullname']}'),
-                          );
-                        }).toList(),
-                        onChanged: (val) {
-                          if (val != null && _takhasos1 != null) {
-                            _stagePatient(val, _takhasos1!);
-                          }
-                        },
                       ),
                       const SizedBox(height: 16),
 
-                      // Dropdown Specialty 2 (if available)
+                      // Multi-Select Popup Button for Specialty 2 (if available)
                       if (_takhasos2 != null) ...[
                         Text(
-                          'Select Patient for $_takhasos2',
+                          'Select Patients for $_takhasos2',
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                         const SizedBox(height: 8),
-                        DropdownButtonFormField<Map<String, dynamic>>(
-                          value: _selectedPatientT2,
-                          decoration: const InputDecoration(
-                            border: OutlineInputBorder(),
-                            hintText: 'Select patient waiting outside...',
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () => _openSelectionPopup(
+                              _takhasos2!,
+                              _outsidePatientsTakhasos2,
+                            ),
+                            icon: const Icon(Icons.person_add_alt_1),
+                            label: Text(
+                              'Choose Patients for $_takhasos2 (${_outsidePatientsTakhasos2.length} Available)',
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              side: BorderSide(color: Colors.indigo.shade800),
+                              foregroundColor: Colors.indigo.shade800,
+                            ),
                           ),
-                          items: _outsidePatientsTakhasos2.map((p) {
-                            return DropdownMenuItem<Map<String, dynamic>>(
-                              value: p,
-                              child: Text('#${p['id']} - ${p['fullname']}'),
-                            );
-                          }).toList(),
-                          onChanged: (val) {
-                            if (val != null && _takhasos2 != null) {
-                              _stagePatient(val, _takhasos2!);
-                            }
-                          },
                         ),
                         const SizedBox(height: 24),
                       ],
@@ -421,12 +535,10 @@ class _WaitingAreaPageState extends State<WaitingAreaPage> {
                                     ),
                                   ),
                                   Text(
-                                    '${_stagedPatients.length} / 5',
+                                    '${_stagedPatients.length} Selected',
                                     style: TextStyle(
                                       fontWeight: FontWeight.bold,
-                                      color: _stagedPatients.length == 5
-                                          ? Colors.red
-                                          : Colors.teal.shade800,
+                                      color: Colors.teal.shade800,
                                     ),
                                   ),
                                 ],

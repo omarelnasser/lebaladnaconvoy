@@ -20,7 +20,9 @@ class _AutorefPageState extends State<AutorefPage> {
 
   // Stream subscription for realtime updates
   StreamSubscription<List<Map<String, dynamic>>>? _queueSubscription;
-  List<Map<String, dynamic>> _queuePatients = [];
+
+  // Full list of patients fetched in realtime
+  List<Map<String, dynamic>> _allPatients = [];
 
   @override
   void initState() {
@@ -59,7 +61,7 @@ class _AutorefPageState extends State<AutorefPage> {
       if (mounted) setState(() => _isLoadingConvoy = false);
     }
 
-    // 2. Setup Realtime Stream for queuefor = 'autoref'
+    // 2. Setup Realtime Stream for patients in 'autorefwaiting' or 'inautoref'
     _subscribeToQueueStream();
   }
 
@@ -70,20 +72,23 @@ class _AutorefPageState extends State<AutorefPage> {
     _queueSubscription = _supabase
         .from('registrations')
         .stream(primaryKey: ['id'])
-        .eq('queuefor', 'autoref')
         .order('id', ascending: true)
         .listen(
           (data) {
             if (!mounted) return;
 
-            // Filter by convoyid in application layer if stream filter isn't chained
             final filteredData = data.where((row) {
-              if (convoyId == null) return true;
-              return row['convoyid'] == convoyId;
+              final queueFor = row['queuefor']?.toString().toLowerCase() ?? '';
+              final matchesConvoy =
+                  convoyId == null || row['convoyid'] == convoyId;
+              final isAutorefState =
+                  queueFor == 'autorefwaiting' || queueFor == 'inautoref';
+
+              return matchesConvoy && isAutorefState;
             }).toList();
 
             setState(() {
-              _queuePatients = filteredData;
+              _allPatients = filteredData;
             });
           },
           onError: (error) {
@@ -92,21 +97,48 @@ class _AutorefPageState extends State<AutorefPage> {
         );
   }
 
-  Future<void> _completeAutoref(dynamic patientId) async {
+  Future<void> _assignPatientToSlot(dynamic patientId) async {
+    final inAutorefCount = _allPatients
+        .where((p) => p['queuefor']?.toString().toLowerCase() == 'inautoref')
+        .length;
+
+    if (_deviceCount > 0 && inAutorefCount >= _deviceCount) {
+      _showSnackBar('All Autoref slots are currently full!');
+      return;
+    }
+
     try {
-      // Update registration record setting autoref = true
       await _supabase
           .from('registrations')
-          .update({'autoref': true, 'queuefor': 'eye'})
+          .update({'queuefor': 'inautoref'})
           .eq('id', patientId);
 
       if (mounted) {
-        _showSnackBar('Autoref marked as completed!', isError: false);
+        _showSnackBar('Patient assigned to Autoref slot!', isError: false);
       }
     } on PostgrestException catch (error) {
       if (mounted) _showSnackBar(error.message);
     } catch (error) {
-      if (mounted) _showSnackBar('Failed to update patient record');
+      if (mounted) _showSnackBar('Failed to assign patient to slot');
+    }
+  }
+
+  Future<void> _completeAutoref(dynamic patientId) async {
+    try {
+      // Mark autoref = true and update queuefor to eyedoctorqueue
+      await _supabase
+          .from('registrations')
+          .update({'autoref': true, 'queuefor': 'eyedoctorqueue'})
+          .eq('id', patientId);
+
+      if (mounted) {
+        _showSnackBar('Autoref completed! Moved to Eye Doctor Queue.',
+            isError: false);
+      }
+    } on PostgrestException catch (error) {
+      if (mounted) _showSnackBar(error.message);
+    } catch (error) {
+      if (mounted) _showSnackBar('Failed to complete patient');
     }
   }
 
@@ -130,9 +162,15 @@ class _AutorefPageState extends State<AutorefPage> {
     final userName = widget.userData['name'] ?? 'N/A';
     final userRole = widget.userData['role'] ?? 'Autoref';
 
-    // Separate patients assigned to active machine slots vs those waiting in queue
-    final activePatients = _queuePatients.take(_deviceCount).toList();
-    final waitingQueue = _queuePatients.skip(_deviceCount).toList();
+    // Separate patients actively in slots vs those waiting in queue
+    final inAutorefPatients = _allPatients
+        .where((p) => p['queuefor']?.toString().toLowerCase() == 'inautoref')
+        .toList();
+
+    final autorefWaitingPatients = _allPatients
+        .where((p) =>
+            p['queuefor']?.toString().toLowerCase() == 'autorefwaiting')
+        .toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -207,9 +245,124 @@ class _AutorefPageState extends State<AutorefPage> {
                       ),
                       const SizedBox(height: 24),
 
+                      // Top Dropdown Expansion Container with Patient List & Plus Buttons
+                      Card(
+                        elevation: 3,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(color: Colors.deepOrange.shade200),
+                        ),
+                        child: Theme(
+                          data: Theme.of(context).copyWith(
+                            dividerColor: Colors.transparent,
+                          ),
+                          child: ExpansionTile(
+                            initiallyExpanded: true,
+                            title: Text(
+                              'Autoref Waiting Queue',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.deepOrange.shade900,
+                              ),
+                            ),
+                            trailing: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.deepOrange.shade50,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: Colors.deepOrange.shade200,
+                                ),
+                              ),
+                              child: Text(
+                                '${autorefWaitingPatients.length} Waiting',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.deepOrange.shade900,
+                                ),
+                              ),
+                            ),
+                            children: [
+                              const Divider(height: 1),
+                              if (autorefWaitingPatients.isEmpty)
+                                Container(
+                                  padding: const EdgeInsets.all(16),
+                                  child: const Center(
+                                    child: Text(
+                                      'No patients currently in Autoref Queue.',
+                                      style: TextStyle(color: Colors.grey),
+                                    ),
+                                  ),
+                                )
+                              else
+                                Padding(
+                                  padding: const EdgeInsets.all(12.0),
+                                  child: ListView.builder(
+                                    shrinkWrap: true,
+                                    physics:
+                                        const NeverScrollableScrollPhysics(),
+                                    itemCount: autorefWaitingPatients.length,
+                                    itemBuilder: (context, index) {
+                                      final patient =
+                                          autorefWaitingPatients[index];
+
+                                      return Card(
+                                        margin:
+                                            const EdgeInsets.only(bottom: 8),
+                                        color: Colors.grey.shade50,
+                                        child: ListTile(
+                                          leading: CircleAvatar(
+                                            backgroundColor:
+                                                Colors.deepOrange.shade100,
+                                            child: Text(
+                                              '#${patient['id']}',
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.deepOrange,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ),
+                                          title: Text(
+                                            patient['fullname'] ?? 'N/A',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                          subtitle: Text(
+                                            'Gender: ${patient['gender'] ?? 'N/A'} | ID: ${patient['id_number'] ?? 'N/A'}',
+                                          ),
+                                          trailing: IconButton(
+                                            icon: const Icon(
+                                              Icons.add_circle,
+                                              color: Colors.deepOrange,
+                                              size: 32,
+                                            ),
+                                            onPressed: () =>
+                                                _assignPatientToSlot(
+                                              patient['id'],
+                                            ),
+                                            tooltip: 'Add to Autoref Slot',
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
                       // Active Machines Section
                       const Text(
-                        'Active Machines',
+                        'Autoref Machines',
                         style: TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
@@ -237,18 +390,20 @@ class _AutorefPageState extends State<AutorefPage> {
                           physics: const NeverScrollableScrollPhysics(),
                           itemCount: _deviceCount,
                           itemBuilder: (context, index) {
-                            final hasPatient = index < activePatients.length;
-                            final patient = hasPatient
-                                ? activePatients[index]
-                                : null;
+                            final occupiedPatient =
+                                index < inAutorefPatients.length
+                                    ? inAutorefPatients[index]
+                                    : null;
+
+                            final isOccupied = occupiedPatient != null;
 
                             return Card(
                               elevation: 3,
-                              margin: const EdgeInsets.only(bottom: 12),
+                              margin: const EdgeInsets.only(bottom: 16),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
                                 side: BorderSide(
-                                  color: hasPatient
+                                  color: isOccupied
                                       ? Colors.deepOrange
                                       : Colors.grey.shade300,
                                   width: 1.5,
@@ -277,19 +432,18 @@ class _AutorefPageState extends State<AutorefPage> {
                                             vertical: 4,
                                           ),
                                           decoration: BoxDecoration(
-                                            color: hasPatient
+                                            color: isOccupied
                                                 ? Colors.orange.shade50
                                                 : Colors.green.shade50,
-                                            borderRadius: BorderRadius.circular(
-                                              6,
-                                            ),
+                                            borderRadius:
+                                                BorderRadius.circular(6),
                                           ),
                                           child: Text(
-                                            hasPatient ? 'Occupied' : 'Ready',
+                                            isOccupied ? 'Occupied' : 'Ready',
                                             style: TextStyle(
                                               fontSize: 12,
                                               fontWeight: FontWeight.bold,
-                                              color: hasPatient
+                                              color: isOccupied
                                                   ? Colors.orange.shade800
                                                   : Colors.green.shade800,
                                             ),
@@ -298,7 +452,9 @@ class _AutorefPageState extends State<AutorefPage> {
                                       ],
                                     ),
                                     const Divider(height: 20),
-                                    if (hasPatient) ...[
+
+                                    if (isOccupied) ...[
+                                      // Machine is occupied by an active patient
                                       Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.spaceBetween,
@@ -309,7 +465,7 @@ class _AutorefPageState extends State<AutorefPage> {
                                                   CrossAxisAlignment.start,
                                               children: [
                                                 Text(
-                                                  patient!['fullname'] ??
+                                                  occupiedPatient['fullname'] ??
                                                       'Unknown Name',
                                                   style: const TextStyle(
                                                     fontSize: 18,
@@ -318,7 +474,7 @@ class _AutorefPageState extends State<AutorefPage> {
                                                 ),
                                                 const SizedBox(height: 4),
                                                 Text(
-                                                  'Patient ID: #${patient['id']} | Gender: ${patient['gender'] ?? 'N/A'}',
+                                                  'ID: #${occupiedPatient['id']} | Gender: ${occupiedPatient['gender'] ?? 'N/A'}',
                                                   style: const TextStyle(
                                                     color: Colors.black87,
                                                   ),
@@ -327,17 +483,27 @@ class _AutorefPageState extends State<AutorefPage> {
                                             ),
                                           ),
                                           ElevatedButton.icon(
-                                            onPressed: () =>
-                                                _completeAutoref(patient['id']),
+                                            onPressed: () => _completeAutoref(
+                                              occupiedPatient['id'],
+                                            ),
                                             icon: const Icon(
-                                              Icons.check,
+                                              Icons.check_circle,
                                               size: 18,
                                             ),
-                                            label: const Text('Complete'),
+                                            label: const Text('Done'),
                                             style: ElevatedButton.styleFrom(
                                               backgroundColor:
-                                                  Colors.deepOrange,
+                                                  Colors.green.shade700,
                                               foregroundColor: Colors.white,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 16,
+                                                vertical: 12,
+                                              ),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
                                             ),
                                           ),
                                         ],
@@ -346,10 +512,10 @@ class _AutorefPageState extends State<AutorefPage> {
                                       const Center(
                                         child: Padding(
                                           padding: EdgeInsets.symmetric(
-                                            vertical: 8.0,
+                                            vertical: 12.0,
                                           ),
                                           child: Text(
-                                            'Waiting for next patient in queue...',
+                                            'Slot Available - Add patient from the top dropdown list',
                                             style: TextStyle(
                                               color: Colors.grey,
                                               fontStyle: FontStyle.italic,
@@ -359,88 +525,6 @@ class _AutorefPageState extends State<AutorefPage> {
                                       ),
                                     ],
                                   ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-
-                      const SizedBox(height: 24),
-
-                      // Waiting Queue Section
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Waiting Queue',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Text(
-                            '${waitingQueue.length} Waiting',
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-
-                      if (waitingQueue.isEmpty)
-                        Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade100,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Center(
-                            child: Text(
-                              'No additional patients in waiting queue.',
-                              style: TextStyle(color: Colors.grey),
-                            ),
-                          ),
-                        )
-                      else
-                        ListView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: waitingQueue.length,
-                          itemBuilder: (context, index) {
-                            final patient = waitingQueue[index];
-                            return Card(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              child: ListTile(
-                                leading: CircleAvatar(
-                                  backgroundColor: Colors.deepOrange.shade100,
-                                  child: Text(
-                                    '#${patient['id']}',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.deepOrange,
-                                      fontSize: 13,
-                                    ),
-                                  ),
-                                ),
-                                title: Text(
-                                  patient['fullname'] ?? 'N/A',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                                subtitle: Text(
-                                  'Gender: ${patient['gender'] ?? 'N/A'}',
-                                ),
-                                trailing: Text(
-                                  'Pos #${index + 1}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.grey,
-                                  ),
                                 ),
                               ),
                             );

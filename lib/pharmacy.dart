@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -20,7 +21,11 @@ class _PharmacyPageState extends State<PharmacyPage> {
   bool _isSearching = false;
   bool _isSaving = false;
 
-  // Patient details state
+  // Realtime subscription for pharmacy waiting list
+  StreamSubscription<List<Map<String, dynamic>>>? _pharmacyQueueSubscription;
+  List<Map<String, dynamic>> _pharmacyQueuePatients = [];
+
+  // Patient details state for search view
   Map<String, dynamic>? _patientDetails;
   int? _patientAge;
 
@@ -31,10 +36,10 @@ class _PharmacyPageState extends State<PharmacyPage> {
   @override
   void initState() {
     super.initState();
-    _fetchConvoyName();
+    _fetchConvoyNameAndSubscribe();
   }
 
-  Future<void> _fetchConvoyName() async {
+  Future<void> _fetchConvoyNameAndSubscribe() async {
     final convoyId = widget.userData['convoyid'];
 
     if (convoyId == null) {
@@ -60,6 +65,38 @@ class _PharmacyPageState extends State<PharmacyPage> {
         setState(() => _isInitLoading = false);
       }
     }
+
+    _subscribeToPharmacyQueueStream();
+  }
+
+  void _subscribeToPharmacyQueueStream() {
+    final convoyId = widget.userData['convoyid'];
+
+    _pharmacyQueueSubscription = _supabase
+        .from('registrations')
+        .stream(primaryKey: ['id'])
+        .order('id', ascending: true)
+        .listen(
+          (data) {
+            if (!mounted) return;
+
+            final filteredData = data.where((row) {
+              final queueFor = row['queuefor']?.toString().toLowerCase() ?? '';
+              final matchesConvoy =
+                  convoyId == null || row['convoyid'] == convoyId;
+              final isPharmacy = queueFor.contains('pharmacy');
+
+              return matchesConvoy && isPharmacy;
+            }).toList();
+
+            setState(() {
+              _pharmacyQueuePatients = filteredData;
+            });
+          },
+          onError: (error) {
+            if (mounted) _showSnackBar('Realtime connection error: $error');
+          },
+        );
   }
 
   Future<void> _searchPatient() async {
@@ -82,7 +119,7 @@ class _PharmacyPageState extends State<PharmacyPage> {
     });
 
     try {
-      // 1. Fetch patient details including 'pharmacy' column
+      // 1. Fetch patient details
       var patientQuery = _supabase
           .from('registrations')
           .select(
@@ -107,18 +144,7 @@ class _PharmacyPageState extends State<PharmacyPage> {
       }
 
       // 2. Calculate Age from DOB
-      int? age;
-      if (patientResponse['dob'] != null) {
-        try {
-          final dob = DateTime.parse(patientResponse['dob'].toString());
-          final now = DateTime.now();
-          age = now.year - dob.year;
-          if (now.month < dob.month ||
-              (now.month == dob.month && now.day < dob.day)) {
-            age--;
-          }
-        } catch (_) {}
-      }
+      int? age = _calculateAge(patientResponse['dob']?.toString());
 
       // 3. Fetch medicines from 'patientmedicine' joined with 'medicine'
       final medicinesResponse = await _supabase
@@ -156,19 +182,325 @@ class _PharmacyPageState extends State<PharmacyPage> {
     }
   }
 
-  Future<void> _saveDispensedMedicines() async {
-    if (_patientDetails == null) return;
+  void _openPharmacyQueueDialog() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Pharmacy Waiting Queue',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.teal.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.teal.shade200),
+                ),
+                child: Text(
+                  '${_pharmacyQueuePatients.length} Waiting',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.teal.shade900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: _pharmacyQueuePatients.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 20),
+                    child: Center(
+                      child: Text(
+                        'No patients currently waiting in Pharmacy Queue.',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _pharmacyQueuePatients.length,
+                    itemBuilder: (context, index) {
+                      final patient = _pharmacyQueuePatients[index];
 
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.teal.shade100,
+                            child: Text(
+                              '#${patient['id']}',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.teal.shade900,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                          title: Text(
+                            patient['fullname'] ?? 'N/A',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'National ID: ${patient['id_number'] ?? "N/A"}',
+                          ),
+                          trailing: const Icon(
+                            Icons.chevron_right,
+                            color: Colors.teal,
+                          ),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _openPatientPrescriptionModal(patient);
+                          },
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _openPatientPrescriptionModal(Map<String, dynamic> patient) async {
+    final patientId = patient['id'];
+    int? age = _calculateAge(patient['dob']?.toString());
+
+    List<Map<String, dynamic>> medList = [];
+    Set<dynamic> selectedMedIds = {};
+    bool isLoadingMeds = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            // Fetch medicines on first build
+            if (isLoadingMeds) {
+              _supabase
+                  .from('patientmedicine')
+                  .select('medicineid, given, medicine:medicineid(name)')
+                  .eq('patientid', patientId)
+                  .then((medicinesResponse) {
+                final List<Map<String, dynamic>> fetchedList =
+                    List<Map<String, dynamic>>.from(medicinesResponse);
+
+                final Set<dynamic> preSelected = {};
+                for (var item in fetchedList) {
+                  if (item['given'] == true) {
+                    preSelected.add(item['medicineid']);
+                  }
+                }
+
+                setModalState(() {
+                  medList = fetchedList;
+                  selectedMedIds = preSelected;
+                  isLoadingMeds = false;
+                });
+              }).catchError((e) {
+                setModalState(() {
+                  isLoadingMeds = false;
+                });
+              });
+            }
+
+            final hasTakhasos2 = patient['takhasos2'] != null &&
+                patient['takhasos2'].toString().trim().isNotEmpty;
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: Text(
+                'Prescription Details - #${patient['id']}',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Patient Info Summary
+                      Card(
+                        elevation: 2,
+                        color: Colors.teal.shade50,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                patient['fullname'] ?? 'Unknown Name',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.teal.shade900,
+                                ),
+                              ),
+                              const Divider(height: 12),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text('Age: ${age != null ? "$age yrs" : "N/A"}'),
+                                  Text(
+                                    'Gender: ${patient['gender'] ?? "N/A"}',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text('National ID: ${patient['id_number'] ?? "N/A"}'),
+                              if (hasTakhasos2)
+                                Text('Specialties: ${patient['takhasos1']}, ${patient['takhasos2']}'),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      const Text(
+                        'Prescribed Medicines:',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+
+                      if (isLoadingMeds)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 20),
+                          child: Center(child: CircularProgressIndicator()),
+                        )
+                      else if (medList.isEmpty)
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Center(
+                            child: Text(
+                              'No prescribed medicines found for this patient.',
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                        )
+                      else
+                        ListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: medList.length,
+                          itemBuilder: (context, index) {
+                            final item = medList[index];
+                            final medicineData =
+                                item['medicine'] as Map<String, dynamic>?;
+                            final medicineName =
+                                medicineData?['name'] ?? 'Unknown Medicine';
+                            final medicineId = item['medicineid'];
+                            final isSelected =
+                                selectedMedIds.contains(medicineId);
+
+                            return CheckboxListTile(
+                              activeColor: Colors.teal,
+                              title: Text(
+                                medicineName,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              value: isSelected,
+                              onChanged: (bool? checked) {
+                                setModalState(() {
+                                  if (checked == true) {
+                                    selectedMedIds.add(medicineId);
+                                  } else {
+                                    selectedMedIds.remove(medicineId);
+                                  }
+                                });
+                              },
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.teal,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: isLoadingMeds
+                      ? null
+                      : () async {
+                          await _saveDispensedMedicinesForPatient(
+                            patientId: patientId,
+                            medList: medList,
+                            selectedMedicineIds: selectedMedIds,
+                          );
+                          if (context.mounted) {
+                            Navigator.pop(context);
+                          }
+                        },
+                  child: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _saveDispensedMedicinesForPatient({
+    required dynamic patientId,
+    required List<Map<String, dynamic>> medList,
+    required Set<dynamic> selectedMedicineIds,
+  }) async {
     final currentUserId = widget.userData['id'];
-    final patientId = _patientDetails!['id'];
-
-    setState(() => _isSaving = true);
 
     try {
       // 1. Update ALL medicines in patientmedicine
-      for (var item in _prescribedMedicines) {
+      for (var item in medList) {
         final medicineId = item['medicineid'];
-        final isSelected = _selectedMedicineIds.contains(medicineId);
+        final isSelected = selectedMedicineIds.contains(medicineId);
 
         await _supabase
             .from('patientmedicine')
@@ -176,35 +508,58 @@ class _PharmacyPageState extends State<PharmacyPage> {
             .match({'patientid': patientId, 'medicineid': medicineId});
       }
 
-      // 2. Mark pharmacy = true in registrations table
+      // 2. Mark pharmacy = true and update queuefor in registrations table
       await _supabase
           .from('registrations')
-          .update({'pharmacy': true})
+          .update({'pharmacy': true, 'queuefor': 'ended'})
           .eq('id', patientId);
 
       if (mounted) {
         _showSnackBar(
-          'Prescription status saved successfully!',
+          'Prescription saved & patient completed!',
           isError: false,
         );
-
-        // Reset search controller and clear current patient display
-        _searchIdController.clear();
-        setState(() {
-          _patientDetails = null;
-          _patientAge = null;
-          _prescribedMedicines = [];
-          _selectedMedicineIds.clear();
-        });
       }
     } on PostgrestException catch (error) {
       if (mounted) _showSnackBar(error.message);
     } catch (error) {
       if (mounted) _showSnackBar('Failed to update medicine records');
-    } finally {
-      if (mounted) {
-        setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _saveDispensedMedicines() async {
+    if (_patientDetails == null) return;
+
+    await _saveDispensedMedicinesForPatient(
+      patientId: _patientDetails!['id'],
+      medList: _prescribedMedicines,
+      selectedMedicineIds: _selectedMedicineIds,
+    );
+
+    if (mounted) {
+      _searchIdController.clear();
+      setState(() {
+        _patientDetails = null;
+        _patientAge = null;
+        _prescribedMedicines = [];
+        _selectedMedicineIds.clear();
+      });
+    }
+  }
+
+  int? _calculateAge(String? dobString) {
+    if (dobString == null) return null;
+    try {
+      final dob = DateTime.parse(dobString);
+      final now = DateTime.now();
+      int age = now.year - dob.year;
+      if (now.month < dob.month ||
+          (now.month == dob.month && now.day < dob.day)) {
+        age--;
       }
+      return age;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -275,6 +630,7 @@ class _PharmacyPageState extends State<PharmacyPage> {
 
   @override
   void dispose() {
+    _pharmacyQueueSubscription?.cancel();
     _searchIdController.dispose();
     super.dispose();
   }
@@ -331,6 +687,28 @@ class _PharmacyPageState extends State<PharmacyPage> {
                                 'Role: $userRole | Convoy: ${_convoyName ?? "N/A"}',
                               ),
                             ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      // Pharmacy Live Queue Button
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _openPharmacyQueueDialog,
+                          icon: const Icon(Icons.local_pharmacy, color: Colors.teal),
+                          label: Text(
+                            'View Pharmacy Queue (${_pharmacyQueuePatients.length} Waiting)',
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.teal,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            side: const BorderSide(color: Colors.teal, width: 1.5),
                           ),
                         ),
                       ),
